@@ -35,21 +35,21 @@ fi
 case $TIMERS in
     weekly) 
     	if which xattr > /dev/null 2>&1; then
-    		if xattr | grep -q user.last_run $SCRIPT; then
+    		if xattr $SCRIPT | grep -q user.last_run; then
     	    	BIWEEK=$((($(xattr -p user.last_run $SCRIPT) + 1) % 2))
     	    fi
     	    
     	    xattr -w user.last_run $BIWEEK $SCRIPT >/dev/null 2>&1
     	
     	elif which getfattr > /dev/null 2>&1; then
-    		if getfattr -n user.last_run $SCRIPT >/dev/null 2>&1; then
+    		if getfattr $SCRIPT | grep -q user.last_run; then
     	    	BIWEEK=$((($(getfattr -n user.last_run --only-values $SCRIPT) + 1) % 2))
     	    fi
     	    
     	    setfattr -n user.last_run -v $BIWEEK $SCRIPT >/dev/null 2>&1
     	fi
     	
-    	if [ "$BIWEEK" != "0" ]; then
+    	if [ $BIWEEK -ne 0 ]; then
     		TIMERS="$TIMERS biweekly"
     	fi
     	
