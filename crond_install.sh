@@ -21,6 +21,9 @@ sudo tee /etc/rc.cron > /dev/null <<'EOF'
 
 SCRIPT=$0
 BASEDIR=$(dirname $(realpath "$SCRIPT"))
+FLOCK=/var/lock/$(basename "$SCRIPT").exclusivelock
+LOGFILE=/var/log/$(basename "$SCRIPT").log
+LOGSIZE=65536
 TIMERS=$1
 
 # Not perfekt. For an axample during week 53 and week 1, which both will be bi-weekly
@@ -90,15 +93,52 @@ case $TIMERS in
     	fi
 esac
 
-for TIMER in $TIMERS; do
-	for FILE in $BASEDIR/rc.cron.d/*.sh; do
-		if [ -r $FILE ]; then
-			if ! (echo $FILE | grep -q "@") || (echo $FILE | grep -qe "@\(any\|$TIMER\)\.sh$"); then
-				$FILE $TIMER
+run-scripts() {
+	# Truncate log file if it exceeds $LOGSIZE
+	if [ -f $LOGFILE ] && [ $(wc -c $LOGFILE | awk '{print $1}') -gt $LOGSIZE ]; then
+		tail -c $LOGSIZE $LOGFILE > $LOGFILE.tmp
+		mv $LOGFILE.tmp $LOGFILE
+	fi
+	
+	echo "$$: Launched at $(date '+%Y-%m-%d %H:%M') using timer [$TIMERS]" | tee -a $LOGFILE
+
+	for TIMER in $TIMERS; do
+		echo "$$: Using timer '$TIMER'" | tee -a $LOGFILE
+	
+		for FILE in $BASEDIR/rc.cron.d/*; do
+			if [ -r $FILE ] && echo $FILE | grep -qe "\.\(sh\|shd\)$"; then
+				if ! echo $FILE | grep -q "@" || echo $FILE | grep -qe "@\(any\|$TIMER\)\.\(sh\|shd\)$"; then
+					if echo $FILE | grep -qe "\.shd$"; then
+						echo "$$: Started file $(basename $FILE) in detached process" | tee -a $LOGFILE
+						# Run process in another detached group
+						(set -m; $FILE $TIMER &)
+					
+					else
+						echo "$$: Running file $(basename $FILE) in current process" | tee -a $LOGFILE
+						$FILE $TIMER 2>&1 | tee -a $LOGFILE
+					fi
+				fi
 			fi
-		fi
+		done
 	done
-done
+	
+	echo "$$: Finished running at $(date '+%Y-%m-%d %H:%M')" | tee -a $LOGFILE
+}
+
+if which flock >/dev/null 2>&1; then
+	(
+		# Required to support 'shd' scripts
+		# Otherwise any BG process will hold on to the lock
+		trap "flock --unlock 200; exit" INT TERM EXIT
+	
+		flock --exclusive 200
+		run-scripts
+		
+	) 200>$FLOCK
+	
+else
+	run-scripts
+fi
 EOF
 
 echo "Installing /etc/systemd/system/cron-startup.service"
