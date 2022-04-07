@@ -41,6 +41,17 @@ You can also have it run on a specific day each week
 
 If a file does not provide `@timer` in it's filename, it will be the same as `@any`. So `myscript@any.sh` is the same as simply `myscript.sh`. 
 
+### Detached scripts
+
+You can run a script in detached mode _(background without being coupled/depended on the main process)_. To do this, simply use the `.shd` file extension instead of `.sh`
+
+| File Extension | Description |
+| -- | -- |
+| script@timer.sh | This will run in the main process. The main process will wait for this script to finish. | 
+| script@timer.shd | This will run in it's own detached process. The main process will continue to the next script. |
+
+ > Note that in detached mode, output from the scripts process is not gonna be redirected to the log file
+
 ### Installation
 
 Just download and run the script from a terminal
