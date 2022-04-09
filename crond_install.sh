@@ -99,8 +99,8 @@ run-scripts() {
 		tail -c $LOGSIZE $LOGFILE > $LOGFILE.tmp
 		mv $LOGFILE.tmp $LOGFILE
 	fi
-	
-	echo "$$: Launched at $(date '+%Y-%m-%d %H:%M') using timer [$TIMERS]" | tee -a $LOGFILE
+
+	echo "$$: Launched at $(date '+%Y-%m-%d %H:%M') using timer [$TIMERS], pid=$$" | tee -a $LOGFILE
 
 	for TIMER in $TIMERS; do
 		echo "$$: Using timer '$TIMER'" | tee -a $LOGFILE
@@ -109,9 +109,13 @@ run-scripts() {
 			if [ -r $FILE ] && echo $FILE | grep -qe "\.\(sh\|shd\)$"; then
 				if ! echo $FILE | grep -q "@" || echo $FILE | grep -qe "@\(any\|$TIMER\)\.\(sh\|shd\)$"; then
 					if echo $FILE | grep -qe "\.shd$"; then
-						echo "$$: Started file $(basename $FILE) in detached process" | tee -a $LOGFILE
 						# Run process in another detached group
-						(set -m; $FILE $TIMER &)
+						(
+							set -m
+							$FILE $TIMER &
+							
+							echo "$$: Started file $(basename $FILE) in detached process, pid=$!" | tee -a $LOGFILE
+						)
 					
 					else
 						echo "$$: Running file $(basename $FILE) in current process" | tee -a $LOGFILE
@@ -132,6 +136,9 @@ if which flock >/dev/null 2>&1; then
 		trap "flock --unlock 200; exit" INT TERM EXIT
 	
 		flock --exclusive 200
+		
+		echo "Pid: $$" >&200 # Store PID in lock file
+		
 		run-scripts
 		
 	) 200>$FLOCK
