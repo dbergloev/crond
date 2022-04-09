@@ -190,6 +190,7 @@ sudo tee /etc/systemd/system/cron@.service > /dev/null <<EOF
 [Service]
   Type=oneshot
   ExecStart=/etc/rc.cron %i
+  KillMode=process
 EOF
 
 echo "Installing /etc/systemd/system/cron@.timer"
