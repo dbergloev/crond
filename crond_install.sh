@@ -21,10 +21,11 @@ sudo tee /etc/rc.cron > /dev/null <<'EOF'
 
 SCRIPT=$0
 BASEDIR=$(dirname $(realpath "$SCRIPT"))
-FLOCK=/var/lock/$(basename "$SCRIPT").exclusivelock
+FLOCK=/var/lock/$(basename "$SCRIPT").elock
 LOGFILE=/var/log/$(basename "$SCRIPT").log
 LOGSIZE=65536
 TIMERS=$1
+PIDOF=$$
 
 # Not perfekt. For an axample during week 53 and week 1, which both will be bi-weekly
 BIWEEK=$(($(date +%W) % 2));
@@ -41,34 +42,34 @@ case $TIMERS in
     		if xattr $SCRIPT | grep -q user.last_run; then
     	    	BIWEEK=$((($(xattr -p user.last_run $SCRIPT) + 1) % 2))
     	    fi
-    	    
+
     	    xattr -w user.last_run $BIWEEK $SCRIPT >/dev/null 2>&1
-    	
+
     	elif which getfattr > /dev/null 2>&1; then
     		if getfattr $SCRIPT | grep -q user.last_run; then
     	    	BIWEEK=$((($(getfattr -n user.last_run --only-values $SCRIPT) + 1) % 2))
     	    fi
-    	    
+
     	    setfattr -n user.last_run -v $BIWEEK $SCRIPT >/dev/null 2>&1
     	fi
-    	
+
     	if [ $BIWEEK -ne 0 ]; then
     		TIMERS="$TIMERS biweekly"
     	fi
-    	
+
     	break
     ;;
-    
+
     daily)
         DOM=$(date +%w)
-    
+
         if [ $DOM -gt 0 ] && [ $DOM -lt 6 ]; then
         	TIMERS="$TIMERS weekdays"
-        	
+
         else
         	TIMERS="$TIMERS weekends"
         fi
-        
+
         case $DOM in
         	1) TIMERS="$TIMERS mondays" ;;
         	2) TIMERS="$TIMERS tuesdays" ;;
@@ -79,15 +80,15 @@ case $TIMERS in
         	*) TIMERS="$TIMERS sundays" ;;
         esac
     ;;
-    
+
     montly)
     	if [ $(date +%m) -eq 1 ]; then
     		TIMERS="$TIMERS annually"
     	fi
-    	
+
     	if [ $(($(date +%m) % 3)) -eq 0 ]; then
     		TIMERS="$TIMERS quarterly"
-    		
+
     	elif [ $(($(date +%m) % 6)) -eq 0 ]; then
     		TIMERS="$TIMERS semiannually"
     	fi
@@ -100,33 +101,50 @@ run-scripts() {
 		mv $LOGFILE.tmp $LOGFILE
 	fi
 
-	echo "$$: Launched at $(date '+%Y-%m-%d %H:%M') using timer [$TIMERS], pid=$$" | tee -a $LOGFILE
+	echo "$PIDOF: Launched at $(date '+%Y-%m-%d %H:%M') using timer [$TIMERS], pid=$PIDOF" | tee -a $LOGFILE
 
 	for TIMER in $TIMERS; do
-		echo "$$: Using timer '$TIMER'" | tee -a $LOGFILE
-	
+		echo "$PIDOF: Using timer '$TIMER'" | tee -a $LOGFILE
+
 		for FILE in $BASEDIR/rc.cron.d/*; do
 			if [ -r $FILE ] && echo $FILE | grep -qe "\.\(sh\|shd\)$"; then
 				if ! echo $FILE | grep -q "@" || echo $FILE | grep -qe "@\(any\|$TIMER\)\.\(sh\|shd\)$"; then
 					if echo $FILE | grep -qe "\.shd$"; then
+						echo "$PIDOF: Starting script $(basename $FILE) in detached process" | tee -a $LOGFILE
+						
 						# Run process in another detached group
 						(
 							set -m
-							$FILE $TIMER &
 							
-							echo "$$: Started file $(basename $FILE) in detached process, pid=$!" | tee -a $LOGFILE
+							# An '@any' script should have a lock on each timer
+							SCRIPTNAME=$(basename $FILE | sed 's/\(@[^\.]\+\)\?\.\(sh\|shd\)$/@'"${TIMER}"'.\2/')
+							SCRIPTLOCK=$(dirname $FLOCK)/cron@$SCRIPTNAME.elock
+							
+							(
+								if ! flock --exclusive --nonblock 200; then
+									echo "$PIDOF: (Background) The script $(basename $FILE) is already running, skipping..." | tee -a $LOGFILE; exit
+								fi
+								
+								pid=$(exec sh -c 'echo "$PPID"')
+								
+								echo "Pid: $pid" >&200
+								echo "$PIDOF: (Background) The script $(basename $FILE) is running in pid=$pid" | tee -a $LOGFILE
+							
+								$FILE $TIMER
+								
+							) 200>$SCRIPTLOCK &
 						)
-					
+
 					else
-						echo "$$: Running file $(basename $FILE) in current process" | tee -a $LOGFILE
+						echo "$PIDOF: Running script $(basename $FILE) in current process" | tee -a $LOGFILE
 						$FILE $TIMER 2>&1 | tee -a $LOGFILE
 					fi
 				fi
 			fi
 		done
 	done
-	
-	echo "$$: Finished running at $(date '+%Y-%m-%d %H:%M')" | tee -a $LOGFILE
+
+	echo "$PIDOF: Finished running at $(date '+%Y-%m-%d %H:%M')" | tee -a $LOGFILE
 }
 
 if which flock >/dev/null 2>&1; then
@@ -134,15 +152,15 @@ if which flock >/dev/null 2>&1; then
 		# Required to support 'shd' scripts
 		# Otherwise any BG process will hold on to the lock
 		trap "flock --unlock 200; exit" INT TERM EXIT
-	
+
 		flock --exclusive 200
-		
-		echo "Pid: $$" >&200 # Store PID in lock file
-		
+
+		echo "Pid: $PIDOF" >&200 # Store PID in lock file
+
 		run-scripts
-		
+
 	) 200>$FLOCK
-	
+
 else
 	run-scripts
 fi
