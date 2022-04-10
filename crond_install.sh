@@ -19,150 +19,165 @@ echo "Installing /etc/rc.cron"
 sudo tee /etc/rc.cron > /dev/null <<'EOF'
 #!/bin/bash
 
-SCRIPT=$0
-BASEDIR=$(dirname $(realpath "$SCRIPT"))
-FLOCK=/var/lock/$(basename "$SCRIPT").elock
-LOGFILE=/var/log/$(basename "$SCRIPT").log
-LOGSIZE=65536
-TIMERS=$1
-PIDOF=$$
+GLB_SELF=$0
+GLB_NAME=$(basename $GLB_SELF)
+GLB_BASEDIR=$(dirname $(realpath "$GLB_SELF"))
+GLB_SCRIPTDIR=$GLB_BASEDIR/${GLB_NAME}.d
+GLB_LOCKDIR=/var/lock
+GLB_LOGDIR=/var/log
+GLB_LOGSIZE=65536
+GLB_PIDOF=$$
+GLB_COND=$1
 
-# Not perfekt. For an axample during week 53 and week 1, which both will be bi-weekly
-BIWEEK=$(($(date +%W) % 2));
-
-# Do not run without any timer
-if [ -z "$TIMERS" ]; then
-	TIMERS=any
+if [ -z "$GLB_COND" ]; then
+	GLB_COND=any
 fi
 
-# Calculate a bi-weekly run
-case $TIMERS in
-    weekly) 
-    	if which xattr > /dev/null 2>&1; then
-    		if xattr $SCRIPT | grep -q user.last_run; then
-    	    	BIWEEK=$((($(xattr -p user.last_run $SCRIPT) + 1) % 2))
-    	    fi
+FNC_RET=
+FNC_NUM=
 
-    	    xattr -w user.last_run $BIWEEK $SCRIPT >/dev/null 2>&1
-
-    	elif which getfattr > /dev/null 2>&1; then
-    		if getfattr $SCRIPT | grep -q user.last_run; then
-    	    	BIWEEK=$((($(getfattr -n user.last_run --only-values $SCRIPT) + 1) % 2))
-    	    fi
-
-    	    setfattr -n user.last_run -v $BIWEEK $SCRIPT >/dev/null 2>&1
-    	fi
-
-    	if [ $BIWEEK -ne 0 ]; then
-    		TIMERS="$TIMERS biweekly"
-    	fi
-
-    	break
-    ;;
-
-    daily)
-        DOM=$(date +%w)
-
-        if [ $DOM -gt 0 ] && [ $DOM -lt 6 ]; then
-        	TIMERS="$TIMERS weekdays"
-
-        else
-        	TIMERS="$TIMERS weekends"
-        fi
-
-        case $DOM in
-        	1) TIMERS="$TIMERS mondays" ;;
-        	2) TIMERS="$TIMERS tuesdays" ;;
-        	3) TIMERS="$TIMERS wednesdays" ;;
-        	4) TIMERS="$TIMERS thursdays" ;;
-        	5) TIMERS="$TIMERS fridays" ;;
-        	6) TIMERS="$TIMERS saturdays" ;;
-        	*) TIMERS="$TIMERS sundays" ;;
-        esac
-    ;;
-
-    montly)
-    	if [ $(date +%m) -eq 1 ]; then
-    		TIMERS="$TIMERS annually"
-    	fi
-
-    	if [ $(($(date +%m) % 3)) -eq 0 ]; then
-    		TIMERS="$TIMERS quarterly"
-
-    	elif [ $(($(date +%m) % 6)) -eq 0 ]; then
-    		TIMERS="$TIMERS semiannually"
-    	fi
-esac
-
-run-scripts() {
-	# Truncate log file if it exceeds $LOGSIZE
-	if [ -f $LOGFILE ] && [ $(wc -c $LOGFILE | awk '{print $1}') -gt $LOGSIZE ]; then
-		tail -c $LOGSIZE $LOGFILE > $LOGFILE.tmp
-		mv $LOGFILE.tmp $LOGFILE
-	fi
-
-	echo "$PIDOF: Launched at $(date '+%Y-%m-%d %H:%M') using timer [$TIMERS], pid=$PIDOF" | tee -a $LOGFILE
-
-	for TIMER in $TIMERS; do
-		echo "$PIDOF: Using timer '$TIMER'" | tee -a $LOGFILE
-
-		for FILE in $BASEDIR/rc.cron.d/*; do
-			if [ -r $FILE ] && echo $FILE | grep -qe "\.\(sh\|shd\)$"; then
-				if ! echo $FILE | grep -q "@" || echo $FILE | grep -qe "@\(any\|$TIMER\)\.\(sh\|shd\)$"; then
-					if echo $FILE | grep -qe "\.shd$"; then
-						echo "$PIDOF: Starting script $(basename $FILE) in detached process" | tee -a $LOGFILE
-						
-						# Run process in another detached group
-						(
-							set -m
-							
-							# An '@any' script should have a lock on each timer
-							SCRIPTNAME=$(basename $FILE | sed 's/\(@[^\.]\+\)\?\.\(sh\|shd\)$/@'"${TIMER}"'.\2/')
-							SCRIPTLOCK=$(dirname $FLOCK)/cron@$SCRIPTNAME.elock
-							
-							(
-								if ! flock --exclusive --nonblock 200; then
-									echo "$PIDOF: (Background) The script $(basename $FILE) is already running, skipping..." | tee -a $LOGFILE; exit
-								fi
-								
-								pid=$(exec sh -c 'echo "$PPID"')
-								
-								echo "Pid: $pid" >&200
-								echo "$PIDOF: (Background) The script $(basename $FILE) is running in pid=$pid" | tee -a $LOGFILE
-							
-								$FILE $TIMER
-								
-							) 200>$SCRIPTLOCK &
-						)
-
-					else
-						echo "$PIDOF: Running script $(basename $FILE) in current process" | tee -a $LOGFILE
-						$FILE $TIMER 2>&1 | tee -a $LOGFILE
-					fi
-				fi
-			fi
-		done
+dir-find_inode() {
+	local dir=$1
+	local inode=$2
+	local file
+	
+	for file in $dir/*; do
+		if [ -f $file ] && [ "$inode" = "`ls -i $file | awk '{print $1}'`" ]; then
+			FNC_RET=$(readlink -f $file)
+			FNC_NUM=$(ls -i $FNC_RET | awk '{print $1}')
+			
+			return 0
+		fi
 	done
-
-	echo "$PIDOF: Finished running at $(date '+%Y-%m-%d %H:%M')" | tee -a $LOGFILE
+	
+	FNC_RET=
+	FNC_NUM=0
+	
+	return 1
 }
 
-if which flock >/dev/null 2>&1; then
+if echo $GLB_COND | grep -qe '^[0-9]\+:[a-z]\+$'; then
+	inode=$(echo $GLB_COND | sed 's/:/ /' | awk '{print $1}')
+	timer=$(echo $GLB_COND | sed 's/:/ /' | awk '{print $2}')
+	
+	if ! dir-find_inode $GLB_SCRIPTDIR $inode; then
+		echo "$GLB_PIDOF: (bg) E - Could not find script with inode $inode" | tee -a $GLB_LOGDIR/$GLB_NAME.log; exit 1
+	else
+		script=$FNC_RET
+		inode=$FNC_NUM
+		
+		if [ ! -r $script ]; then
+			echo "$GLB_PIDOF: (bg) E - The script $script is not executable" | tee -a $GLB_LOGDIR/$GLB_NAME.log; exit 1
+		fi
+	fi
+	
 	(
-		# Required to support 'shd' scripts
-		# Otherwise any BG process will hold on to the lock
-		trap "flock --unlock 200; exit" INT TERM EXIT
-
-		flock --exclusive 200
-
-		echo "Pid: $PIDOF" >&200 # Store PID in lock file
-
-		run-scripts
-
-	) 200>$FLOCK
+		if ! flock --exclusive -w 20 200; then
+			echo "$GLB_PIDOF: (bg) The script $script is already running, skipping..." | tee -a $GLB_LOGDIR/$GLB_NAME.log; exit 0
+		fi
+		
+		echo "Pid: $GLB_PIDOF" >&200 # Store PID in lock file
+		
+		$script $timer
+	
+	) 200>$GLB_LOCKDIR/${GLB_NAME}:${inode}.elock
 
 else
-	run-scripts
+	case $GLB_COND in
+		weekly) 
+			# Not perfekt. For an axample during week 53 and week 1, which both will be bi-weekly
+			biweek=$(($(date +%W) % 2));
+
+			if which xattr > /dev/null 2>&1; then
+				if xattr $GLB_SELF | grep -q user.last_run; then
+			    	biweek=$((($(xattr -p user.last_run $GLB_SELF) + 1) % 2))
+			    fi
+
+			    xattr -w user.last_run $biweek $GLB_SELF >/dev/null 2>&1
+
+			elif which getfattr > /dev/null 2>&1; then
+				if getfattr $GLB_SELF | grep -q user.last_run; then
+			    	biweek=$((($(getfattr -n user.last_run --only-values $GLB_SELF) + 1) % 2))
+			    fi
+
+			    setfattr -n user.last_run -v $biweek $GLB_SELF >/dev/null 2>&1
+			fi
+
+			if [ $biweek -ne 0 ]; then
+				GLB_COND="$GLB_COND biweekly"
+			fi
+
+			break
+		;;
+
+		daily)
+		    dow=$(date +%w)
+
+		    if [ $dow -gt 0 ] && [ $dow -lt 6 ]; then
+		    	GLB_COND="$GLB_COND weekdays"
+
+		    else
+		    	GLB_COND="$GLB_COND weekends"
+		    fi
+
+		    case $dow in
+		    	1) GLB_COND="$GLB_COND mondays" ;;
+		    	2) GLB_COND="$GLB_COND tuesdays" ;;
+		    	3) GLB_COND="$GLB_COND wednesdays" ;;
+		    	4) GLB_COND="$GLB_COND thursdays" ;;
+		    	5) GLB_COND="$GLB_COND fridays" ;;
+		    	6) GLB_COND="$GLB_COND saturdays" ;;
+		    	*) GLB_COND="$GLB_COND sundays" ;;
+		    esac
+		;;
+
+		montly)
+			if [ $(date +%m) -eq 1 ]; then
+				GLB_COND="$GLB_COND annually"
+			fi
+
+			if [ $(($(date +%m) % 3)) -eq 0 ]; then
+				GLB_COND="$GLB_COND quarterly"
+
+			elif [ $(($(date +%m) % 6)) -eq 0 ]; then
+				GLB_COND="$GLB_COND semiannually"
+			fi
+	esac
+	
+	(
+		flock --exclusive 200
+		
+		echo "Pid: $GLB_PIDOF" >&200 # Store PID in lock file
+		
+		if [ -f $GLB_LOGDIR/$GLB_NAME.log ] && [ $(wc -c $GLB_LOGDIR/$GLB_NAME.log | awk '{print $1}') -gt $GLB_LOGSIZE ]; then
+			tail -c $GLB_LOGSIZE $GLB_LOGDIR/$GLB_NAME.log > $GLB_LOGDIR/$GLB_NAME-old.log
+			echo "" > $GLB_LOGDIR/$GLB_NAME.log
+		fi
+		
+		echo "$GLB_PIDOF: Launched at $(date '+%Y-%m-%d %H:%M') using timer [$GLB_COND], pid=$GLB_PIDOF" | tee -a $GLB_LOGDIR/$GLB_NAME.log
+		
+		for timer in $GLB_COND; do
+			echo "$GLB_PIDOF: Using timer '$timer'" | tee -a $GLB_LOGDIR/$GLB_NAME.log
+			
+			for file in $GLB_SCRIPTDIR/*; do
+				if [ -r $file ] && echo $file | grep -qe "\.\(sh\|shd\)$"; then
+					if ! echo $file | grep -q "@" || echo $file | grep -qe "@\(any\|$timer\)\.\(sh\|shd\)$"; then
+						if echo $file | grep -qe "\.shd$"; then
+							echo "$GLB_PIDOF: Starting script $(basename $file) in detached process" | tee -a $GLB_LOGDIR/$GLB_NAME.log
+							systemctl start cron-detached@$(ls -i $file | awk '{print $1}'):$timer
+						
+						else
+							echo "$GLB_PIDOF: Running script $(basename $file) in current process" | tee -a $GLB_LOGDIR/$GLB_NAME.log
+							$file $timer 2>&1 | tee -a $GLB_LOGDIR/$GLB_NAME.log
+						fi
+					fi
+				fi
+			done
+		done
+		
+		echo "$GLB_PIDOF: Finished running at $(date '+%Y-%m-%d %H:%M')" | tee -a $GLB_LOGDIR/$GLB_NAME.log
+	
+	) 200>$GLB_LOCKDIR/${GLB_NAME}.elock
 fi
 EOF
 
@@ -182,6 +197,16 @@ sudo tee /etc/systemd/system/cron-startup.service > /dev/null <<EOF
   WantedBy=multi-user.target
 EOF
 
+echo "Installing /etc/systemd/system/cron-detached@.service"
+sudo tee /etc/systemd/system/cron-detached@.service > /dev/null <<EOF
+[Unit]
+  Description=Cronjob running @%i detached process
+
+[Service]
+  Type=simple
+  ExecStart=/etc/rc.cron %i
+EOF
+
 echo "Installing /etc/systemd/system/cron@.service"
 sudo tee /etc/systemd/system/cron@.service > /dev/null <<EOF
 [Unit]
@@ -190,7 +215,6 @@ sudo tee /etc/systemd/system/cron@.service > /dev/null <<EOF
 [Service]
   Type=oneshot
   ExecStart=/etc/rc.cron %i
-  KillMode=process
 EOF
 
 echo "Installing /etc/systemd/system/cron@.timer"
@@ -207,6 +231,8 @@ sudo tee /etc/systemd/system/cron@.timer > /dev/null <<EOF
   WantedBy=timers.target
 EOF
 
+sudo systemctl daemon-reload
+
 echo "Creating /etc/rc.cron.d/"
 test -d /etc/rc.cron.d || sudo mkdir /etc/rc.cron.d
 
@@ -222,7 +248,7 @@ sudo systemctl enable -q --now cron@hourly.timer
 echo "Enaling @daily timer"
 sudo systemctl enable -q --now cron@daily.timer
 
-echo "Enaling @weekly and @biweekly timer"
+echo "Enaling @weekly timer"
 sudo systemctl enable -q --now cron@weekly.timer
 
 echo "Enaling @montly timer"
