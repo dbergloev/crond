@@ -28,9 +28,48 @@ GLB_LOGDIR=/var/log
 GLB_LOGSIZE=65536
 GLB_PIDOF=$$
 GLB_COND=$1
+GLB_USER=root
 
 if [ -z "$GLB_COND" ]; then
 	GLB_COND=any
+	
+elif echo $GLB_COND | grep -qie '\(:\)\?[a-z]\+:[a-z0-9]\+$'; then
+	user=$(echo $GLB_COND | awk -v 'FS=:' '{print $NF}')
+	home=$(getent passwd | grep -e "^$user:" | grep -wFf <(grep '^/' /etc/shells) | awk -v 'FS=:' '{print $6}')
+	
+	if [ -z "$home" ]; then
+		echo "$GLB_PIDOF: (user) E - Could not launch cron for user $user, no such user exists!" | tee -a $GLB_LOGDIR/$GLB_NAME.log; exit 1
+	fi
+	
+	GLB_USER=$user
+	GLB_COND=$(echo $GLB_COND | sed 's/:[^:]\+$//')
+	GLB_BASEDIR=$home
+	GLB_SCRIPTDIR=$home/.${GLB_NAME}.d
+	GLB_LOCKDIR=$home/.var/lock
+	GLB_LOGDIR=$home/.var/log
+	
+	if [ ! -d $GLB_SCRIPTDIR ]; then
+		exit 0
+	fi
+	
+	for dir in $GLB_LOCKDIR $GLB_LOGDIR; do
+		if [ ! -d $dir ]; then
+			sudo -u $user -- mkdir -p $dir && chmod 2775 $dir
+		fi
+	done
+	
+elif echo $GLB_COND | grep -qie '^[a-z]\+$'; then
+	users="`getent passwd | grep -wFf <(grep '^/' /etc/shells) | awk -v 'FS=:' '{print $1}'`"
+	
+	if [ -n "$users" ]; then
+		for user in $users; do
+			echo "$GLB_PIDOF: Starting cron jobs for user $user" | tee -a $GLB_LOGDIR/$GLB_NAME.log
+			systemctl --no-block start cron@${GLB_COND}:${user}
+		done
+	fi
+	
+else
+	echo "$GLB_PIDOF: E - Invalid timer '$GLB_COND' was used" | tee -a $GLB_LOGDIR/$GLB_NAME.log; exit 1
 fi
 
 FNC_RET=
@@ -57,8 +96,8 @@ dir-find_inode() {
 }
 
 if echo $GLB_COND | grep -qe '^[0-9]\+:[a-z]\+$'; then
-	inode=$(echo $GLB_COND | sed 's/:/ /' | awk '{print $1}')
-	timer=$(echo $GLB_COND | sed 's/:/ /' | awk '{print $2}')
+	inode=$(echo $GLB_COND | awk -v 'FS=:' '{print $1}')
+	timer=$(echo $GLB_COND | awk -v 'FS=:' '{print $2}')
 	
 	if ! dir-find_inode $GLB_SCRIPTDIR $inode; then
 		echo "$GLB_PIDOF: (bg) E - Could not find script with inode $inode" | tee -a $GLB_LOGDIR/$GLB_NAME.log; exit 1
@@ -78,7 +117,12 @@ if echo $GLB_COND | grep -qe '^[0-9]\+:[a-z]\+$'; then
 		
 		echo "Pid: $GLB_PIDOF" >&200 # Store PID in lock file
 		
-		$script $timer
+		if [ "$GLB_USER" == "root" ]; then
+			$script $timer
+			
+		else
+			sudo -u $GLB_USER -- $script $timer
+		fi
 	
 	) 200>$GLB_LOCKDIR/${GLB_NAME}:${inode}.elock
 
@@ -86,24 +130,7 @@ else
 	case $GLB_COND in
 		weekly) 
 			# Not perfekt. For an axample during week 53 and week 1, which both will be bi-weekly
-			biweek=$(($(date +%W) % 2));
-
-			if which xattr > /dev/null 2>&1; then
-				if xattr $GLB_SELF | grep -q user.last_run; then
-			    	biweek=$((($(xattr -p user.last_run $GLB_SELF) + 1) % 2))
-			    fi
-
-			    xattr -w user.last_run $biweek $GLB_SELF >/dev/null 2>&1
-
-			elif which getfattr > /dev/null 2>&1; then
-				if getfattr $GLB_SELF | grep -q user.last_run; then
-			    	biweek=$((($(getfattr -n user.last_run --only-values $GLB_SELF) + 1) % 2))
-			    fi
-
-			    setfattr -n user.last_run -v $biweek $GLB_SELF >/dev/null 2>&1
-			fi
-
-			if [ $biweek -ne 0 ]; then
+			if [ $(($(date +%W) % 2)) -ne 0 ]; then
 				GLB_COND="$GLB_COND biweekly"
 			fi
 
@@ -164,11 +191,21 @@ else
 					if ! echo $file | grep -q "@" || echo $file | grep -qe "@\(any\|$timer\)\.\(sh\|shd\)$"; then
 						if echo $file | grep -qe "\.shd$"; then
 							echo "$GLB_PIDOF: Starting script $(basename $file) in detached process" | tee -a $GLB_LOGDIR/$GLB_NAME.log
-							systemctl start cron-detached@$(ls -i $file | awk '{print $1}'):$timer
+							if [ "$GLB_USER" == "root" ]; then
+								systemctl start cron-detached@$(ls -i $file | awk '{print $1}'):$timer
+								
+							else
+								systemctl start cron-detached@$(ls -i $file | awk '{print $1}'):$timer:$GLB_USER
+							fi
 						
 						else
 							echo "$GLB_PIDOF: Running script $(basename $file) in current process" | tee -a $GLB_LOGDIR/$GLB_NAME.log
-							$file $timer 2>&1 | tee -a $GLB_LOGDIR/$GLB_NAME.log
+							if [ "$GLB_USER" == "root" ]; then
+								$file $timer 2>&1 | tee -a $GLB_LOGDIR/$GLB_NAME.log
+								
+							else
+								sudo -u $GLB_USER -- $file $timer 2>&1 | tee -a $GLB_LOGDIR/$GLB_NAME.log
+							fi
 						fi
 					fi
 				fi
@@ -253,10 +290,5 @@ sudo systemctl enable -q --now cron@weekly.timer
 
 echo "Enaling @montly timer"
 sudo systemctl enable -q --now cron@monthly.timer
-
-if ! (which xattr > /dev/null 2>&1) && ! (which getfattr > /dev/null 2>&1); then
-	echo "Optional: Could not detect 'xattr' or 'attr'"
-	echo "  - This is useful to make '@biweekly' more accurate"
-fi
 
 echo "Installation is complete"
