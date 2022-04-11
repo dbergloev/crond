@@ -76,3 +76,7 @@ lrwxrwxrwx 1 root root    0 xxx 0 0:00 myscript@montly.shd -> myscript
 lrwxrwxrwx 1 root root    0 xxx 0 0:00 myscript@quarterly.shd -> myscript
 lrwxrwxrwx 1 root root    0 xxx 0 0:00 myscript@weekly.shd -> myscript
 ```
+
+### Multi-User support
+
+You can create and add scripts in `~/.rc.cron.d/` to have cron run scripts from within your home directory as that specific user. 
