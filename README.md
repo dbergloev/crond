@@ -63,3 +63,16 @@ chmod +x crond_install.sh
 ```
 
 Further help Linus' of the world? https://www.cyberciti.biz/faq/how-to-execute-a-shell-script-in-linux/
+
+### Multiple Timers
+
+Even though you can run all timers against one script by naming it `@any` or leaving out any timer in the name, a better way is using links, unless you absolutly must run it against __ALL__ timers. Even if you filter out the timers you don't need within the script, the script is still executed which does produce a litle overheat, especially if it is executed as a detached process. Instead leave out the extenstion `.sh` and `.shd` and create links for the required timers.
+
+```sh
+# ls -l /etc/rc.cron.d/
+-rwxr-xr-x 1 root root  000 xxx 0 0:00 myscript
+lrwxrwxrwx 1 root root    0 xxx 0 0:00 myscript@daily.shd -> myscript
+lrwxrwxrwx 1 root root    0 xxx 0 0:00 myscript@montly.shd -> myscript
+lrwxrwxrwx 1 root root    0 xxx 0 0:00 myscript@quarterly.shd -> myscript
+lrwxrwxrwx 1 root root    0 xxx 0 0:00 myscript@weekly.shd -> myscript
+```
