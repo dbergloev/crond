@@ -11,6 +11,7 @@ Simply create a script `/etc/rc.cron.d/name@timer.sh` and fill it with your requ
 | Timer | Description |
 | -- | -- | 
 | @startup | Run when the system boots |
+| @shutdown | Run when the system shuts down |
 | @hourly | Run ones every hour |
 | @daily | Run ones every day |
 | @weekly | Run ones every week |
@@ -77,6 +78,23 @@ lrwxrwxrwx 1 root root    0 xxx 0 0:00 myscript@quarterly.shd -> myscript
 lrwxrwxrwx 1 root root    0 xxx 0 0:00 myscript@weekly.shd -> myscript
 ```
 
-### Multi-User support
+### Logs
 
-You can create and add scripts in `~/.rc.cron.d/` to have cron run scripts from within your home directory as that specific user. 
+The main log can be found in `journalctl` within the identifier `rc.cron`
+
+```sh
+$ journalctl -t rc.cron
+```
+
+Each detached process will have their own log entries using identifiers `rc.cron#<number>` where `<number>` is the script inode. You can find reference to this within the main log: 
+
+```sh
+$ journalctl -t rc.cron
+<date> rc.cron: Starting script <file> (rc.cron#<inode>) in detached process
+```
+
+From here you can access the log entry from the detached script: 
+
+```sh
+$ journalctl -t rc.cron#<inode>
+...
