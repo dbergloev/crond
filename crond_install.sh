@@ -154,7 +154,10 @@ esac
 					if echo $file | grep -qe "\.shd$"; then
 						inode=$(ls -i $file | awk '{print $1}')
 					
-						systemd-cat --priority=info --identifier=rc.cron -- echo "Starting script $(basename $file) (rc.cron#$inode) in detached process"
+					    # We need the root inode for logging in case of symlinks
+					    find_inode $script_path $inode
+					    
+						systemd-cat --priority=info --identifier=rc.cron -- echo "Starting script $(basename $file) (rc.cron#$find_inode_num) in detached process"
 						systemctl start cron-detached@$inode:$arg
 					
 					else
