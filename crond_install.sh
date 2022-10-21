@@ -80,7 +80,7 @@ if echo $timer | grep -qe '^[0-9]\+:'; then
 	fi
 	
 	if ! (
-			if ! flock --exclusive -w 20 200; then
+			if ! flock --exclusive -w 180 200; then
 				systemd-cat --priority=notice --identifier=rc.cron#$inode -- echo "The script $script is already running in a background task, skipping..."; exit 0
 			fi
 			
