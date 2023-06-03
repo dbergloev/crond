@@ -198,6 +198,7 @@ sudo tee /etc/systemd/system/cron-shutdown.service > /dev/null <<EOF
 [Unit]
   Description=Cronjob running @shutdown timer
   Before=umount.target
+  DefaultDependencies=no
 
 [Service]
   Type=oneshot
