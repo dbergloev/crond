@@ -197,15 +197,16 @@ echo "Installing /etc/systemd/system/cron-shutdown.service"
 sudo tee /etc/systemd/system/cron-shutdown.service > /dev/null <<EOF
 [Unit]
   Description=Cronjob running @shutdown timer
-  Before=shutdown.target
+  Before=umount.target
 
 [Service]
   Type=oneshot
   ExecStart=/etc/rc.cron shutdown
+  TimeoutStartSec=0
   TimeoutSec=0
 
 [Install]
-  WantedBy=shutdown.target
+  WantedBy=final.target
 EOF
 
 echo "Installing /etc/systemd/system/cron-detached@.service"
