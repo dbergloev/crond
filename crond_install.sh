@@ -210,6 +210,21 @@ sudo tee /etc/systemd/system/cron-shutdown.service > /dev/null <<EOF
   WantedBy=final.target
 EOF
 
+echo "Installing /etc/systemd/system/cron-network.service"
+sudo tee /etc/systemd/system/cron-network.service > /dev/null <<EOF
+[Unit]
+  Description=Cronjob running @network timer
+  Wants=network-online.target
+  After=network.target network-online.target
+
+[Service]
+  Type=oneshot
+  ExecStart=/etc/rc.cron network
+  
+[Install]
+  WantedBy=multi-user.target
+EOF
+
 echo "Installing /etc/systemd/system/cron-detached@.service"
 sudo tee /etc/systemd/system/cron-detached@.service > /dev/null <<EOF
 [Unit]
@@ -244,6 +259,20 @@ sudo tee /etc/systemd/system/cron@.timer > /dev/null <<EOF
   WantedBy=timers.target
 EOF
 
+echo "Installing /etc/systemd/system/cron-quarter-hourly.timer"
+sudo tee /etc/systemd/system/cron-quarter-hourly.timer > /dev/null <<EOF
+[Unit]
+  Description=Schedule a cronjob quarter-hourly
+
+[Timer]
+  Persistent=true
+  OnCalendar=*:0/15
+  Unit=cron@quarter-hourly.service
+
+[Install]
+  WantedBy=timers.target
+EOF
+
 sudo systemctl daemon-reload
 
 echo "Creating /etc/rc.cron.d/"
@@ -258,8 +287,14 @@ sudo systemctl enable -q cron-startup.service
 echo "Enaling @shutdown timer"
 sudo systemctl enable -q cron-shutdown.service
 
+echo "Enaling @network timer"
+sudo systemctl enable -q cron-network.service
+
 echo "Enaling @hourly timer"
 sudo systemctl enable -q --now cron@hourly.timer
+
+echo "Enaling @quarter-hourly timer"
+sudo systemctl enable -q --now cron-quarter-hourly.timer
 
 echo "Enaling @daily timer"
 sudo systemctl enable -q --now cron@daily.timer

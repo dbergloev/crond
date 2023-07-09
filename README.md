@@ -12,7 +12,9 @@ Simply create a script `/etc/rc.cron.d/name@timer.sh` and fill it with your requ
 | -- | -- | 
 | @startup | Run when the system boots |
 | @shutdown | Run when the system shuts down |
+| @network | Run when the network has been brought up |
 | @hourly | Run ones every hour |
+| @quarter-hourly | Run ones every 15 minutes |
 | @daily | Run ones every day |
 | @weekly | Run ones every week |
 | @biweekly | Run ones every two weeks |
