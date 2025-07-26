@@ -1,8 +1,8 @@
-# crond
+# RC-Cron
 
-Both `crontab` and `rc.local` has been more or less removed or disabled on many distro's. Systemd is replacing most of the old features, and that is fine. It's a hell of a lot better than older init systems, crontab etc. _(it is, deal with it)_, but it's also more complex if you just want to quickly add a script during boot or to run each hour or each day. These are basic things that should be much quicker to add, which is what this small install script provides. 
+Both `crontab` and `rc.local` has been more or less removed or disabled on many distro's. Systemd is replacing most of the old features, and that is fine. It's a hell of a lot better than older init systems, crontab etc., but it's also more complex if you just want to quickly add a script during boot or to run each hour or each day. These are basic things that should be much quicker to add, which is a feature that this provides and more. 
 
-It creates a cron/startup script that will run custom scripts _(/etc/rc.cron.d/)_ depending on different timers that is provided by the filename itself. It is fast and simple to add and remove scripts and it covers most basic needs. 
+RC-Cron merges the old `crontab` and `rc.local` within a single and much more powerful design. It allows you to quickly add scripts and have them being executed during boot, shutdown, on various timers and more, just by using a simple naming convention for their filenames. It can even be used to add other event based injections from other systems and allows scripts to be executed on the main RC-Cron thread or as a background daemon for longer running scripts. 
 
 ### Adding a script
 
@@ -53,23 +53,9 @@ You can run a script in detached mode _(background without being coupled/depende
 | script@timer.sh | This will run in the main process. The main process will wait for this script to finish. | 
 | script@timer.shd | This will run in it's own detached process. The main process will continue to the next script. |
 
- > Note that in detached mode, output from the scripts process is not gonna be redirected to the log file
-
-### Installation
-
-Just download and run the script from a terminal
-
-```sh
-wget https://raw.githubusercontent.com/dk-zero-cool/crond/main/crond_install.sh
-chmod +x crond_install.sh
-./crond_install.sh
-```
-
-Further help Linus' of the world? https://www.cyberciti.biz/faq/how-to-execute-a-shell-script-in-linux/
-
 ### Multiple Timers
 
-Even though you can run all timers against one script by naming it `@any` or leaving out any timer in the name, a better way is using links, unless you absolutly must run it against __ALL__ timers. Even if you filter out the timers you don't need within the script, the script is still executed which does produce a litle overheat, especially if it is executed as a detached process. Instead leave out the extenstion `.sh` and `.shd` and create links for the required timers.
+Even though you can run all timers against one script by naming it `@any`, a better way is using links, unless you absolutely must run it against __ALL__ timers. Even if you filter out the timers you don't need within the script, the script is still executed which does produce a little overheat, especially if it is executed as a detached process. Instead leave out the extension `.sh` and `.shd` and create links for the required timers.
 
 ```sh
 # ls -l /etc/rc.cron.d/
@@ -99,4 +85,54 @@ From here you can access the log entry from the detached script:
 
 ```sh
 $ journalctl -t rc.cron#<inode>
-...
+```
+
+### Custom Events
+
+By default RC-Cron is executed by `systemd` on various triggers, but it is not limited to this. 
+
+Let's look at an example where we add `ufw` events for when the firewall is enabled or disabled. 
+
+ * /etc/ufw/after.init
+ 
+    ```sh
+    case "$1" in
+        start)
+            /etc/rc.cron ufw enable
+        ;;
+    esac
+    ```
+    
+ * /etc/ufw/before.init
+ 
+    ```sh
+    case "$1" in
+        stop)
+            /etc/rc.cron ufw disable
+        ;;
+    esac
+    ```
+    
+Now you can create a script `/etc/rc.cron.d/rules@ufw.sh`
+
+```sh
+case "$2" in
+    enable)
+        iptables -A ...
+    ;;
+    
+    disable)
+        iptables -D ...
+    ;;
+esac
+```
+
+### Installation
+
+Just download and run the script from a terminal
+
+```sh
+wget https://raw.githubusercontent.com/dk-zero-cool/crond/main/crond_install.sh
+chmod +x crond_install.sh
+./crond_install.sh
+```
