@@ -33,6 +33,8 @@ catch() {
     fi
 }
 
+##
+# Find a script based on it's inode number
 find_inode() {
 	local dir=$1
 	local inode=$2
@@ -53,20 +55,60 @@ find_inode() {
 	return 1
 }
 
+# Return arguments for the 'find_inode' function
 find_inode_ret=
 find_inode_num=
 
 timer=${1:-"any"}
+inode=
+args=( )
 self_pid=$$
 self_name=$(basename $0)
 self_path="$(dirname $(realpath "$0"))"
 script_path="$self_path/${self_name}.d"
 lock_path=/var/lock
 
-if echo $timer | grep -qe '^[0-9]\+:'; then
-	inode=$(echo $timer | awk -v 'FS=:' '{print $1}')
-	timer=$(echo $timer | awk -v 'FS=:' '{print $2}')
-	
+case "$#" in
+    0)
+        echo "Invalid number of arguments!" >&2; exit 1
+    ;;
+    
+    1)
+        ##
+        # Systemd arguments passing
+        #   * timer
+        #   * timer:arg1[:arg2:...]
+        #   * inode:timer
+        #   * inode:timer:arg1[:arg2:...]
+        #
+        IFS=':' read -r -a parts <<< "$timer"
+        if [[ "${parts[0]}" =~ ^[0-9]+$ ]]; then
+            inode="${parts[0]}"
+            timer="${parts[1]}"
+            args=("${parts[@]:2}")
+
+        else
+            timer="${parts[0]}"
+            args=("${parts[@]:1}")
+        fi
+    ;;
+    
+    *)
+        ##
+        # Normal argument passing
+        #   * timer arg1 [arg2 ...]
+        #
+        shift
+        for arg in "$@"; do
+            args+=("$arg")
+        done
+    ;;
+esac
+
+##
+# If we have an inode, then this script was launched in daemon mode
+# 
+if [ -n "$inode" ]; then
 	if ! find_inode $script_path $inode; then
 		systemd-cat --priority=err --identifier=rc.cron#$inode -- echo "Could not find script with inode $inode"; exit 1
 		
@@ -79,23 +121,29 @@ if echo $timer | grep -qe '^[0-9]\+:'; then
 		fi
 	fi
 	
+	ret=0
+	
 	if ! (
 			if ! flock --exclusive -w 180 200; then
 				systemd-cat --priority=notice --identifier=rc.cron#$inode -- echo "The script $script is already running in a background task, skipping..."; exit 0
 			fi
 			
 			echo "Pid: $self_pid, Path: $script" >&200 # Store PID in lock file
-			systemd-cat --stderr-priority=err --identifier=rc.cron#$inode -- $script $timer
+			systemd-cat --stderr-priority=err --identifier=rc.cron#$inode -- $script $timer "${args[@]}"
 		
 		) 200>$lock_path/${self_name}:${inode}.elock
 	
 	then
-		systemd-cat --priority=alert --identifier=rc.cron#$inode -- echo "The script $script exited with error $? using timer '$timer'"
+	    ret=$?
+		systemd-cat --priority=alert --identifier=rc.cron#$inode -- echo "The script $script exited with error $ret using timer '$timer'"
 	fi
 	
-	exit $?
+	exit $ret
 fi
 
+##
+# Fill in related timers
+#
 case $timer in
 	weekly) 
 		# Not perfekt. For an axample during week 53 and week 1, which both will be bi-weekly
@@ -139,18 +187,22 @@ case $timer in
 	;;
 esac
 
+##
+# Normal cron call from systemd
+#
 (
 	flock --exclusive 200
 	echo "Pid: $self_pid" >&200 # Store PID in lock file
+	ret=0
 	
 	systemd-cat --priority=notice --identifier=rc.cron -- echo "Launched at $(date '+%Y-%m-%d %H:%M') using timer [$timer]"
 	
-	for arg in $timer; do
-		systemd-cat --priority=info --identifier=rc.cron -- echo "Using timer '$arg'"
+	for x in $timer; do
+		systemd-cat --priority=info --identifier=rc.cron -- echo "Using timer '$x'"
 		
 		for file in $script_path/*; do
 			if [ -x $file ] && echo $file | grep -qe "\.\(sh\|shd\)$"; then
-				if ! echo $file | grep -q "@" || echo $file | grep -qe "@\(any\|$arg\)\.\(sh\|shd\)$"; then
+				if ! echo $file | grep -q "@" || echo $file | grep -qe "@\(any\|$x\)\.\(sh\|shd\)$"; then
 					if echo $file | grep -qe "\.shd$"; then
 						inode=$(ls -i $file | awk '{print $1}')
 					
@@ -158,13 +210,20 @@ esac
 					    find_inode $script_path $inode
 					    
 						systemd-cat --priority=info --identifier=rc.cron -- echo "Starting script $(basename $file) (rc.cron#$find_inode_num) in detached process"
-						systemctl start cron-detached@$inode:$arg
+						
+						if [ ${#args[@]} -gt 0 ]; then
+						    systemctl start cron-detached@$inode:$x:$(IFS=:; echo "${args[*]}")
+						
+						else
+						    systemctl start cron-detached@$inode:$x
+						fi
 					
 					else
 						systemd-cat --priority=info --identifier=rc.cron -- echo "Running script $(basename $file) in main process"
 						
-						if ! systemd-cat --stderr-priority=err --identifier=rc.cron -- $file $arg; then
-							systemd-cat --priority=alert --identifier=rc.cron -- echo "The script $(basename $file) exited with error $? using timer '$arg'"
+						if ! systemd-cat --stderr-priority=err --identifier=rc.cron -- $file $x "${args[@]}"; then
+						    ret=$?
+							systemd-cat --priority=alert --identifier=rc.cron -- echo "The script $(basename $file) exited with error $ret using timer '$x'"
 						fi
 					fi
 				fi
@@ -173,6 +232,8 @@ esac
 	done
 	
 	systemd-cat --priority=info --identifier=rc.cron -- echo "Finished running at $(date '+%Y-%m-%d %H:%M')"
+	
+	exit $ret
 
 ) 200>$lock_path/${self_name}.elock
 EOF
@@ -196,18 +257,18 @@ EOF
 echo "Installing /etc/systemd/system/cron-shutdown.service"
 sudo tee /etc/systemd/system/cron-shutdown.service > /dev/null <<EOF
 [Unit]
-  Description=Cronjob running @shutdown timer
-  Before=umount.target
-  DefaultDependencies=no
+Description=Cronjob running @shutdown timer
+DefaultDependencies=no
+Conflicts=shutdown.target
+Before=shutdown.target
 
 [Service]
-  Type=oneshot
-  ExecStart=/etc/rc.cron shutdown
-  TimeoutStartSec=0
-  TimeoutSec=0
+Type=oneshot
+ExecStart=/etc/rc.cron shutdown
+TimeoutStartSec=120
 
 [Install]
-  WantedBy=final.target
+WantedBy=multi-user.target
 EOF
 
 echo "Installing /etc/systemd/system/cron-network.service"
@@ -228,10 +289,10 @@ EOF
 echo "Installing /etc/systemd/system/cron-detached@.service"
 sudo tee /etc/systemd/system/cron-detached@.service > /dev/null <<EOF
 [Unit]
-  Description=Cronjob running @%i detached process
+  Description=Cronjob running @%i timer
 
 [Service]
-  Type=simple
+  Type=oneshot
   ExecStart=/etc/rc.cron %i
 EOF
 
